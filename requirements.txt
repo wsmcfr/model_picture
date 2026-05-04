@@ -1,0 +1,20 @@
+# 基础数值与图像处理
+numpy==2.0.2
+pillow==11.3.0
+opencv-python==4.10.0.84
+
+# 数据处理与数据集划分
+pandas==2.3.3
+scikit-learn==1.6.1
+
+# 训练与数据增强
+torch==2.6.0
+torchvision==0.21.0
+segmentation-models-pytorch==0.5.0
+albumentations==2.0.8
+timm==1.0.26
+tensorboard==2.20.0
+
+# 模型导出与电脑端推理
+onnx==1.19.1
+onnxruntime==1.19.2

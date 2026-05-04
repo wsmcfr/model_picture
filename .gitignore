@@ -1,0 +1,44 @@
+# Python缓存和本地运行产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地虚拟环境，体积很大，不能提交到GitHub
+defect-unet/
+.venv/
+venv/
+env/
+
+# 数据集和采集图片，体积很大，应通过网盘/Release/Git LFS单独管理
+datasets/
+datasets_severstal/
+train_images/
+train.csv/
+raw_images/
+converted_images/
+converted_masks/
+
+# 训练日志和TensorBoard输出
+logs/
+logs_*/
+runs/
+
+# 摄像头推理截图输出
+camera_infer_outputs/
+
+# 训练权重和中间checkpoint
+checkpoints/*.pth
+checkpoints_resume_smoke/
+checkpoints_resume_unit/
+checkpoints_smoke/
+
+# 保留一个可直接运行电脑端推理测试的ONNX模型
+!checkpoints/defect_unet.onnx
+
+# 系统和编辑器文件
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
