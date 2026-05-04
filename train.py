@@ -61,6 +61,65 @@ from dataset import (
 CLASS_NAMES = ["background", "scratch", "rust", "dent", "crack", "burr"]
 
 
+# 推荐encoder名称。默认保留MobileNetV2，MobileNetV3作为对比实验通过SMP的timm通用入口启用。
+# 注意：SMP 0.5.0的静态encoder列表不会列出tu-*名称，但get_encoder支持这类动态timm encoder。
+RECOMMENDED_ENCODERS = [
+    "mobilenet_v2",
+    "tu-mobilenetv3_small_100.lamb_in1k",
+    "tu-tf_mobilenetv3_small_100.in1k",
+    "efficientnet-b0",
+    "timm-tf_efficientnet_lite0",
+    "mobileone_s0",
+    "resnet18",
+]
+
+
+def build_encoder_help_examples():
+    """
+    生成错误提示和命令行help里使用的encoder示例列表。
+
+    主要流程：
+      1. 读取SMP静态encoder列表，筛掉当前环境完全不存在的静态encoder。
+      2. 额外保留tu-*动态timm encoder，因为这类名称不在静态列表里，但SMP可以创建。
+
+    返回值：
+        list[str]：当前项目推荐尝试的encoder名称。
+    """
+    supported_encoders = set(smp.encoders.encoders.keys())
+    examples = []
+    for name in RECOMMENDED_ENCODERS:
+        if name.startswith("tu-") or name in supported_encoders:
+            examples.append(name)
+    return examples
+
+
+def validate_encoder_name(encoder):
+    """
+    提前校验encoder名称是否可能被SMP创建。
+
+    参数：
+        encoder (str)：命令行传入的backbone名称。
+
+    返回值：
+        None。校验不通过时抛出ValueError。
+
+    关键说明：
+      - 普通encoder必须出现在smp.encoders.encoders静态列表里。
+      - `tu-*`是SMP 0.5.0支持的timm通用入口，不在静态列表里，因此单独放行。
+      - 真正创建模型时如果timm模型名不存在，SMP仍会抛出更具体的错误。
+    """
+    supported_encoders = set(smp.encoders.encoders.keys())
+    if encoder in supported_encoders or encoder.startswith("tu-"):
+        return
+
+    examples = ", ".join(build_encoder_help_examples())
+    raise ValueError(
+        f"当前SMP环境不支持encoder={encoder!r}。"
+        f"可先用这些轻量encoder测试: {examples}。"
+        "MobileNetV3对比推荐使用 --encoder tu-mobilenetv3_small_100.lamb_in1k。"
+    )
+
+
 def set_random_seed(seed):
     """
     固定训练过程中的主要随机源，减少每次运行之间的随机波动。
@@ -534,15 +593,14 @@ def parse_args():
     )
 
     # --encoder: backbone编码器名称
-    # 当前安装的SMP 0.5.0不支持mobilenet_v3_small，因此默认使用可直接运行的mobilenet_v2
-    # 可选替换:
-    #   efficientnet-b0: 精度和速度较均衡，参数量约6M
-    #   resnet18: 经典backbone，参数量约11M，可能太大
-    #   timm-tf_efficientnet_lite0: 面向移动端的轻量EfficientNet变体
-    # 更换backbone后模型大小和推理速度会变化，需重新评估部署可行性
+    # 默认保留mobilenet_v2，保证当前已经跑通的训练/导出/推理链路不受影响。
+    # MobileNetV3对比实验推荐使用:
+    #   tu-mobilenetv3_small_100.lamb_in1k
+    # 这个名称来自SMP 0.5.0的timm通用入口，虽然不在静态encoder列表里，但可以正常创建UNet。
+    # 更换backbone后checkpoint不能混用，必须用新的checkpoint_dir和output路径保存。
     parser.add_argument(
         "--encoder", type=str, default="mobilenet_v2",
-        help="backbone名称（默认mobilenet_v2；当前SMP环境不支持mobilenet_v3_small）"
+        help="backbone名称（默认mobilenet_v2；V3对比可用tu-mobilenetv3_small_100.lamb_in1k）"
     )
 
     # --checkpoint_dir: 模型权重保存目录
@@ -616,6 +674,18 @@ def parse_args():
         help="自动类别权重最多抽样多少张mask；0表示扫描全部（默认500）"
     )
 
+    # --max_train_batches / --max_val_batches: 调试烟雾测试专用
+    # 默认0表示完整训练/验证，不改变正式训练行为。
+    # 新增encoder或排查脚本时可设为2~5，快速确认能前向、反向、验证和保存checkpoint。
+    parser.add_argument(
+        "--max_train_batches", type=int, default=0,
+        help="调试用：每个epoch最多训练多少个batch；0表示完整训练集（默认0）"
+    )
+    parser.add_argument(
+        "--max_val_batches", type=int, default=0,
+        help="调试用：每个epoch最多验证多少个batch；0表示完整验证集（默认0）"
+    )
+
     return parser.parse_args()
 
 
@@ -655,7 +725,7 @@ def create_model(num_classes, encoder):
     smp.Unet 关键参数说明:
       encoder_name:
         backbone名称，SMP支持70+种backbone
-        常用: mobilenet_v2, resnet18, efficientnet-b0
+        常用: mobilenet_v2, tu-mobilenetv3_small_100.lamb_in1k, efficientnet-b0
       encoder_weights:
         预训练权重，"imagenet"表示用ImageNet分类任务预训练的权重
         预训练backbone已经学会提取边缘/纹理等通用特征
@@ -668,23 +738,7 @@ def create_model(num_classes, encoder):
         输出类别数，决定模型最后一层输出几个通道
     """
     # 先校验encoder名称，避免SMP抛出超长KeyError后看不清真正原因。
-    supported_encoders = set(smp.encoders.encoders.keys())
-    if encoder not in supported_encoders:
-        lightweight_examples = [
-            name for name in [
-                "mobilenet_v2",
-                "efficientnet-b0",
-                "timm-tf_efficientnet_lite0",
-                "mobileone_s0",
-                "resnet18",
-            ]
-            if name in supported_encoders
-        ]
-        raise ValueError(
-            f"当前SMP环境不支持encoder={encoder!r}。"
-            f"可先用这些轻量encoder测试: {', '.join(lightweight_examples)}。"
-            "如果必须使用MobileNetV3，需要更换SMP版本或自定义encoder。"
-        )
+    validate_encoder_name(encoder)
 
     model = smp.Unet(
         encoder_name=encoder,           # backbone编码器
@@ -741,7 +795,7 @@ def compute_iou(preds, targets, num_classes):
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device, num_classes,
-                    epoch=None, total_epochs=None, log_interval=50):
+                    epoch=None, total_epochs=None, log_interval=50, max_batches=0):
     """
     训练一个epoch（遍历整个训练集一次）
 
@@ -774,6 +828,10 @@ def train_one_epoch(model, loader, criterion, optimizer, device, num_classes,
         log_interval (int):
             batch级进度打印间隔；默认每50个batch打印一次，0表示只打印阶段首尾。
 
+        max_batches (int):
+            调试/烟雾测试时最多训练多少个batch；0表示完整遍历训练集。
+            这个参数只用于快速验证新encoder能否前向、反向和保存checkpoint，正式训练不要设置。
+
     返回:
         avg_loss (float): 本epoch平均损失
         miou (float):     本epoch平均mIoU（所有类别IoU的均值）
@@ -783,7 +841,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device, num_classes,
 
     total_loss = 0
     all_ious = {i: [] for i in range(num_classes)}
-    total_batches = len(loader)
+    total_batches = len(loader) if max_batches <= 0 else min(len(loader), max_batches)
     stage_start_time = time.time()
 
     for batch_idx, (images, masks) in enumerate(loader, start=1):
@@ -829,8 +887,13 @@ def train_one_epoch(model, loader, criterion, optimizer, device, num_classes,
                 log_interval=log_interval,
             )
 
+        # 调试模式：只跑指定数量batch，避免为了验证encoder而等待完整epoch。
+        # break放在日志之后，保证最后一个被执行的batch也会打印进度。
+        if max_batches > 0 and batch_idx >= max_batches:
+            break
+
     # 计算平均损失
-    avg_loss = total_loss / len(loader)
+    avg_loss = total_loss / total_batches
 
     # 计算mIoU（所有真实出现过的类别IoU均值）
     # 训练阶段和验证阶段共用summarize_ious，避免统计逻辑不一致。
@@ -840,7 +903,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device, num_classes,
 
 
 def validate(model, loader, criterion, device, num_classes,
-             epoch=None, total_epochs=None, log_interval=50):
+             epoch=None, total_epochs=None, log_interval=50, max_batches=0):
     """
     验证一个epoch（在验证集上评估模型，不更新参数）
 
@@ -857,12 +920,15 @@ def validate(model, loader, criterion, device, num_classes,
 
     进度显示:
       epoch和total_epochs同时传入时，会按log_interval打印验证进度。
+
+    max_batches:
+      调试/烟雾测试时最多验证多少个batch；0表示完整遍历验证集。
     """
     model.eval()  # 评估模式：关闭Dropout，BatchNorm用全局统计量
 
     total_loss = 0
     all_ious = {i: [] for i in range(num_classes)}
-    total_batches = len(loader)
+    total_batches = len(loader) if max_batches <= 0 else min(len(loader), max_batches)
     stage_start_time = time.time()
 
     with torch.no_grad():  # 不计算梯度，验证不需要反向传播
@@ -894,7 +960,11 @@ def validate(model, loader, criterion, device, num_classes,
                     log_interval=log_interval,
                 )
 
-    avg_loss = total_loss / len(loader)
+            # 调试模式：只跑指定数量batch，快速验证验证流程和指标统计是否正常。
+            if max_batches > 0 and batch_idx >= max_batches:
+                break
+
+    avg_loss = total_loss / total_batches
 
     # 计算验证mIoU时同样保留0分IoU，避免模型漏检某类时指标被虚高。
     miou, avg_ious = summarize_ious(all_ious, num_classes)
@@ -1095,6 +1165,7 @@ def main():
             epoch=epoch + 1,
             total_epochs=args.epochs,
             log_interval=args.log_interval,
+            max_batches=args.max_train_batches,
         )
 
         # 在验证集上评估
@@ -1107,6 +1178,7 @@ def main():
             epoch=epoch + 1,
             total_epochs=args.epochs,
             log_interval=args.log_interval,
+            max_batches=args.max_val_batches,
         )
 
         # 更新学习率

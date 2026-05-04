@@ -38,6 +38,62 @@ import torch
 import segmentation_models_pytorch as smp
 
 
+RECOMMENDED_ENCODERS = [
+    "mobilenet_v2",
+    "tu-mobilenetv3_small_100.lamb_in1k",
+    "tu-tf_mobilenetv3_small_100.in1k",
+    "efficientnet-b0",
+    "timm-tf_efficientnet_lite0",
+    "mobileone_s0",
+    "resnet18",
+]
+
+
+def build_encoder_help_examples():
+    """
+    生成导出脚本错误提示中使用的encoder示例列表。
+
+    主要流程：
+      1. 普通encoder从SMP静态列表中确认是否存在。
+      2. `tu-*`动态timm encoder不在静态列表中，但SMP 0.5.0可以创建，因此单独保留。
+
+    返回值：
+        list[str]：当前项目推荐使用的encoder名称。
+    """
+    supported_encoders = set(smp.encoders.encoders.keys())
+    examples = []
+    for name in RECOMMENDED_ENCODERS:
+        if name.startswith("tu-") or name in supported_encoders:
+            examples.append(name)
+    return examples
+
+
+def validate_encoder_name(encoder):
+    """
+    校验导出时传入的encoder名称。
+
+    参数：
+        encoder (str)：命令行传入的backbone名称，必须与checkpoint保存的一致。
+
+    返回值：
+        None。校验不通过时抛出ValueError。
+
+    说明：
+      MobileNetV3对比实验推荐 `tu-mobilenetv3_small_100.lamb_in1k`。
+      这个名称通过SMP的timm通用入口创建，不会出现在静态encoder列表里。
+    """
+    supported_encoders = set(smp.encoders.encoders.keys())
+    if encoder in supported_encoders or encoder.startswith("tu-"):
+        return
+
+    examples = ", ".join(build_encoder_help_examples())
+    raise ValueError(
+        f"当前SMP环境不支持encoder={encoder!r}。"
+        f"可用轻量encoder示例: {examples}。"
+        "导出时的encoder必须与训练保存checkpoint时一致。"
+    )
+
+
 def export_onnx(checkpoint_path, onnx_path, num_classes, encoder):
     """
     导出ONNX模型
@@ -97,23 +153,7 @@ def export_onnx(checkpoint_path, onnx_path, num_classes, encoder):
     """
     # 1. 创建模型（结构与训练时完全一致）
     # 先校验encoder名称，避免SMP抛出很长的KeyError后不容易看清真正问题。
-    supported_encoders = set(smp.encoders.encoders.keys())
-    if encoder not in supported_encoders:
-        lightweight_examples = [
-            name for name in [
-                "mobilenet_v2",
-                "efficientnet-b0",
-                "timm-tf_efficientnet_lite0",
-                "mobileone_s0",
-                "resnet18",
-            ]
-            if name in supported_encoders
-        ]
-        raise ValueError(
-            f"当前SMP环境不支持encoder={encoder!r}。"
-            f"可用轻量encoder示例: {', '.join(lightweight_examples)}。"
-            "导出时的encoder必须与训练保存checkpoint时一致。"
-        )
+    validate_encoder_name(encoder)
 
     model = smp.Unet(
         encoder_name=encoder,           # backbone，必须与训练时一致
@@ -223,7 +263,7 @@ if __name__ == "__main__":
     # 必须与训练时一致，否则模型结构不同
     parser.add_argument(
         "--encoder", type=str, default="mobilenet_v2",
-        help="backbone名称，必须与训练时一致（默认mobilenet_v2）"
+        help="backbone名称，必须与训练时一致（默认mobilenet_v2；V3对比可用tu-mobilenetv3_small_100.lamb_in1k）"
     )
 
     args = parser.parse_args()

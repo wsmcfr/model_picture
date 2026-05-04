@@ -33,6 +33,8 @@ checkpoints/*.pth
 checkpoints_resume_smoke/
 checkpoints_resume_unit/
 checkpoints_smoke/
+checkpoints_mobilenetv3*/
+logs_mobilenetv3*/
 
 # 保留一个可直接运行电脑端推理测试的ONNX模型
 !checkpoints/defect_unet.onnx

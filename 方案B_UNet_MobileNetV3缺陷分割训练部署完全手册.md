@@ -394,7 +394,7 @@ python train.py \
     --batch_size 8 \                # 批大小：RTX 4060可用8，显存不够改4或2
     --epochs 100 \                  # 训练轮数：先跑100轮看效果
     --lr 1e-3 \                     # 学习率：UNet收敛快，1e-3合适
-    --encoder mobilenet_v2 \        # 当前环境可直接运行的轻量backbone
+    --encoder mobilenet_v2 \        # 默认V2；V3对比可用 tu-mobilenetv3_small_100.lamb_in1k
     --checkpoint_dir ./checkpoints \# 模型保存目录
     --log_dir ./logs \              # TensorBoard日志目录
     --num_workers 4 \               # 数据加载线程（报BrokenPipeError改0）
@@ -403,6 +403,8 @@ python train.py \
     --patience 12 \                 # 验证mIoU连续12轮不提升则提前停止
     --seed 42 \                     # 固定随机种子，方便复现实验
     --class_weights auto            # 自动估计类别权重，缓解背景/缺陷类别不平衡
+    --max_train_batches 0 \         # 调试用，0=完整训练集；设2可只跑前2个训练batch
+    --max_val_batches 0             # 调试用，0=完整验证集；设2可只跑前2个验证batch
 ```
 
 ### 5.4.1 训练轮数、续训和最佳模型
@@ -498,6 +500,92 @@ D:\model_picture\defect-unet\python.exe train.py `
 
 Windows 下如果 DataLoader 多进程不稳定，先用 `--num_workers 0` 跑通；正式长训练时再尝试改回 `--num_workers 4`。
 
+### 5.4.3 MobileNetV2 与 MobileNetV3-Small 对比训练
+
+当前保留 `mobilenet_v2` 作为默认版本，不覆盖已有的 `checkpoints` 和 `logs`。MobileNetV3-Small 通过 SMP 0.5.0 的 timm 通用入口启用，推荐 encoder 名称为：
+
+```text
+tu-mobilenetv3_small_100.lamb_in1k
+```
+
+本机实测模型创建结果：
+
+| encoder | 参数量 | 状态 | 说明 |
+|---|---:|---|---|
+| `mobilenet_v2` | 约6.63M | 已训练、已导出ONNX、已用于UVC推理 | 当前稳定默认版本 |
+| `tu-mobilenetv3_small_100.lamb_in1k` | 约3.59M | 已通过建模烟雾测试 | 更轻，适合做对比实验 |
+
+注意：`tu-mobilenetv3_small_100.lamb_in1k` 不会出现在 `smp.encoders.encoders.keys()` 的静态列表里，但 SMP 0.5.0 的 `get_encoder()` 支持 `tu-*` 动态 timm encoder，因此脚本已单独放行这个名称。
+
+V3对比训练命令：
+
+```powershell
+python train.py `
+    --data_dir D:\model_picture\datasets_severstal `
+    --num_classes 5 `
+    --encoder tu-mobilenetv3_small_100.lamb_in1k `
+    --checkpoint_dir D:\model_picture\checkpoints_mobilenetv3 `
+    --log_dir D:\model_picture\logs_mobilenetv3 `
+    --epochs 100 `
+    --batch_size 4 `
+    --num_workers 0 `
+    --log_interval 50
+```
+
+V3快速烟雾测试命令（只验证能前向、反向、验证、保存checkpoint，不代表真实精度）：
+
+```powershell
+python train.py `
+    --data_dir D:\model_picture\datasets_severstal `
+    --num_classes 5 `
+    --encoder tu-mobilenetv3_small_100.lamb_in1k `
+    --checkpoint_dir D:\model_picture\checkpoints_mobilenetv3_smoke `
+    --log_dir D:\model_picture\logs_mobilenetv3_smoke `
+    --epochs 1 `
+    --batch_size 2 `
+    --num_workers 0 `
+    --log_interval 1 `
+    --class_weight_samples 5 `
+    --max_train_batches 2 `
+    --max_val_batches 2
+```
+
+本机烟雾测试结果：
+
+| 项目 | 结果 |
+|---|---|
+| V3训练前向/反向 | 通过 |
+| V3验证流程 | 通过 |
+| V3 checkpoint保存 | 通过，生成 `checkpoints_mobilenetv3_smoke\best_model.pth` |
+| V3 ONNX导出 | 通过 |
+| V3 smoke ONNX大小 | 约13.7MB |
+| 当前V2 ONNX大小 | 约25.3MB |
+
+V3中断后续训：
+
+```powershell
+python train.py `
+    --data_dir D:\model_picture\datasets_severstal `
+    --num_classes 5 `
+    --encoder tu-mobilenetv3_small_100.lamb_in1k `
+    --checkpoint_dir D:\model_picture\checkpoints_mobilenetv3 `
+    --log_dir D:\model_picture\logs_mobilenetv3 `
+    --epochs 100 `
+    --batch_size 4 `
+    --num_workers 0 `
+    --resume auto `
+    --log_interval 50
+```
+
+对比时主要看四件事：
+
+| 指标 | 看什么 | 判断方法 |
+|---|---|---|
+| 验证集mIoU | 分割精度 | V3是否接近或超过V2 |
+| 各类别IoU | 小缺陷是否能学到 | scratch/crack等类别不能长期为0 |
+| ONNX文件大小 | 部署体积 | V3理论上应更小 |
+| UVC实时FPS | 实时性 | 同一摄像头、同一电脑上对比推理帧率 |
+
 ### 5.5 监控训练过程
 
 训练脚本会在终端直接打印batch级进度，例如：
@@ -584,32 +672,35 @@ tensorboard --logdir D:\model_picture\logs
   └── 5. 仍不达标 → 考虑方案A（MobileNetV3+LR-ASPP）或增加注意力机制
 ```
 
-### 5.9 本次环境兼容修改记录：为什么先用 MobileNetV2
+### 5.9 本次环境兼容修改记录：保留 MobileNetV2，并新增 MobileNetV3-Small 对比
 
 | 项目 | 当前状态 |
 |---|---|
 | 原方案目标 | UNet + MobileNetV3-Small |
-| 当前SMP版本 | `segmentation_models_pytorch==0.5.0` |
-| 实测问题 | 当前SMP encoder列表不包含 `mobilenet_v3_small` / `mobilenet_v3_large` |
-| 直接后果 | 继续使用 `--encoder mobilenet_v3_small` 会报 `Wrong encoder name` |
-| 临时处理 | `train.py` 默认改为 `mobilenet_v2`，保证当前测试数据集能先跑通 |
-| 影响 | 这不是最终部署模型选择，只是为了当前环境先验证数据、训练循环、损失函数和导出流程 |
+| 当前SMP版本 | `segmentation_models_pytorch==0.5.0`，PyPI最新版本仍是0.5.0 |
+| 直接升级结果 | GitHub源码版SMP要求 Python `>=3.10`，当前训练环境 Python `3.9.25` 不能直接安装 |
+| 静态列表问题 | `smp.encoders.encoders.keys()` 不包含 `mobilenet_v3_small` / `mobilenet_v3_large` |
+| 可行V3入口 | SMP 0.5.0 支持 `tu-*` timm通用encoder，实测 `tu-mobilenetv3_small_100.lamb_in1k` 可创建UNet |
+| 当前处理 | 默认仍保留 `mobilenet_v2`，新增 V3 对比命令，不覆盖V2权重和ONNX |
+| 影响 | V2用于稳定跑通主流程；V3用于比较参数量、mIoU、ONNX大小和UVC实时FPS |
 
 当前环境可用的轻量encoder示例：
 
 | encoder | 说明 | 适用场景 |
 |---|---|---|
-| `mobilenet_v2` | 当前默认，SMP直接支持，参数量约6.63M | 先跑通训练、验证、导出流程 |
+| `mobilenet_v2` | 当前默认，SMP直接支持，参数量约6.63M | 稳定主线版本 |
+| `tu-mobilenetv3_small_100.lamb_in1k` | MobileNetV3-Small，SMP的timm动态入口，参数量约3.59M | V3轻量对比实验 |
+| `tu-tf_mobilenetv3_small_100.in1k` | TensorFlow风格MobileNetV3-Small，参数量约3.59M | 备用V3对比入口 |
 | `efficientnet-b0` | 精度和速度较均衡 | 测试精度上限 |
 | `timm-tf_efficientnet_lite0` | 面向移动端的轻量EfficientNet变体 | 后续比较移动端部署潜力 |
 | `resnet18` | 经典baseline，较大 | 做精度参考，不一定适合STM32MP157部署 |
 
-后续升级到真正 MobileNetV3 的路线：
+后续进一步升级路线：
 
 | 路线 | 做法 | 优点 | 风险/工作量 |
 |---|---|---|---|
-| A. 升级/更换SMP版本 | 安装支持 MobileNetV3 encoder 的版本，重新检查 `smp.encoders.encoders.keys()` | 代码改动最少 | 版本变化可能影响依赖、权重下载、ONNX导出 |
-| B. 使用 `timm` + SMP 的 timm encoder | 选择SMP支持的 `timm-*` encoder，或确认是否存在 MobileNetV3 的timm入口 | 保持SMP训练框架 | encoder名称和预训练权重需要实测确认 |
+| A. 保持当前Python 3.9 + SMP 0.5.0 | 使用 `tu-mobilenetv3_small_100.lamb_in1k` | 不破坏现有V2环境，已经实测可建模 | `tu-*`不在静态列表，需记住完整名称 |
+| B. 新建 Python 3.10+ 环境 | 安装GitHub新版SMP，重新确认encoder列表 | 可能获得更完整的新特性 | 新环境要重新安装PyTorch/CUDA并验证所有脚本 |
 | C. 自定义MobileNetV3 encoder | 用 `torchvision.models.mobilenet_v3_small` 注册/封装为SMP encoder | 最接近原始方案 | 需要实现特征层输出、通道数、encoder_depth，工作量最大 |
 | D. 改用方案A | MobileNetV3 + LR-ASPP/DeepLab类轻量分割头 | 更贴近移动端语义分割常见结构 | 训练和导出脚本要重新适配 |
 
@@ -617,9 +708,9 @@ tensorboard --logdir D:\model_picture\logs
 
 | 检查项 | 命令/动作 | 目的 |
 |---|---|---|
-| 确认可用encoder | `python -c "import segmentation_models_pytorch as smp; print([k for k in smp.encoders.encoders.keys() if 'mobile' in k.lower()])"` | 确认环境是否真的支持MobileNetV3 |
-| 训练脚本烟雾测试 | `python train.py --data_dir ... --num_classes ... --epochs 1 --batch_size 1 --num_workers 0` | 确认能前向、反向、保存checkpoint |
-| ONNX导出测试 | `python export_onnx.py --checkpoint ... --num_classes ... --encoder ...` | 确认部署链路没有断 |
+| 确认可用encoder | `python -c "from train import create_model; import torch; m=create_model(5, 'tu-mobilenetv3_small_100.lamb_in1k'); print(sum(p.numel() for p in m.parameters())/1e6)"` | 确认V3能创建 |
+| 训练脚本烟雾测试 | `python train.py --data_dir ... --num_classes 5 --encoder tu-mobilenetv3_small_100.lamb_in1k --epochs 1 --batch_size 1 --num_workers 0` | 确认能前向、反向、保存checkpoint |
+| ONNX导出测试 | `python export_onnx.py --checkpoint ... --num_classes 5 --encoder tu-mobilenetv3_small_100.lamb_in1k` | 确认部署链路没有断 |
 
 ---
 
@@ -644,7 +735,17 @@ D:\model_picture\defect-unet\python.exe export_onnx.py \
     --encoder mobilenet_v2
 ```
 
-导出后会生成 `defect_unet.onnx` 文件。当前 Severstal + `mobilenet_v2` 测试模型导出的文件约25MB；后续换更轻量结构或INT8量化后体积会继续下降。
+如果训练的是 MobileNetV3-Small 对比模型，导出命令必须使用同一个encoder，并建议输出到独立目录：
+
+```bash
+D:\model_picture\defect-unet\python.exe export_onnx.py \
+    --checkpoint D:\model_picture\checkpoints_mobilenetv3\best_model.pth \
+    --output D:\model_picture\checkpoints_mobilenetv3\defect_unet_mobilenetv3.onnx \
+    --num_classes 5 \
+    --encoder tu-mobilenetv3_small_100.lamb_in1k
+```
+
+导出后会生成 `defect_unet.onnx` 或 `defect_unet_mobilenetv3.onnx` 文件。当前 Severstal + `mobilenet_v2` 测试模型导出的文件约25MB；V3-Small参数量更少，导出的ONNX通常也会更小，具体以实际导出文件为准。
 
 导出成功时应看到类似输出：
 
@@ -664,7 +765,7 @@ ONNX模型验证通过
 | `No module named 'segmentation_models_pytorch'` | 用了系统Python，不是训练环境Python | 改用 `D:\model_picture\defect-unet\python.exe export_onnx.py ...` |
 | `Module onnx is not installed!` | 训练环境缺少ONNX包 | 执行 `D:\model_picture\defect-unet\python.exe -m pip install onnx` |
 | `类别数不一致` | `--num_classes` 和checkpoint不一致 | 按checkpoint保存的类别数填写，Severstal测试集为5 |
-| `encoder不一致` | `--encoder` 和checkpoint不一致 | 按checkpoint保存的encoder填写，当前测试为 `mobilenet_v2` |
+| `encoder不一致` | `--encoder` 和checkpoint不一致 | 按checkpoint保存的encoder填写；V2是 `mobilenet_v2`，V3对比是 `tu-mobilenetv3_small_100.lamb_in1k` |
 
 可用 Netron 可视化查看模型结构：https://netron.app
 
