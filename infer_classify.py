@@ -47,6 +47,12 @@ INPUT_SIZE = (224, 224)
 # 所以索引 0=bad, 1=good
 CLASS_NAMES = ["bad", "good"]
 
+# 缺陷类别索引：从 CLASS_NAMES 反查，避免后面手写 0/1 时再次写反
+BAD_CLASS_INDEX = CLASS_NAMES.index("bad")
+
+# 良品类别索引：从 CLASS_NAMES 反查，和 BAD_CLASS_INDEX 配套使用
+GOOD_CLASS_INDEX = CLASS_NAMES.index("good")
+
 # 类别颜色（BGR 格式，用于 OpenCV 显示）
 CLASS_COLORS = {
     "bad":  (0, 0, 255),    # 红色
@@ -55,6 +61,52 @@ CLASS_COLORS = {
 
 # 置信度阈值：bad 概率超过此值判定为缺陷品
 BAD_THRESHOLD = 0.5
+
+
+def get_class_probability(probs, class_name):
+    """
+    按类别名读取 softmax 概率，避免调用处直接写 probs[0] / probs[1]。
+
+    参数:
+        probs (np.ndarray): run_inference() 返回的概率数组，顺序必须与 CLASS_NAMES 一致。
+        class_name (str): 要读取的类别名，例如 "bad" 或 "good"。
+
+    返回:
+        float: 指定类别对应的概率值。
+    """
+    # CLASS_NAMES 是训练和推理之间的类别顺序契约，这里统一从类别名反查索引
+    class_index = CLASS_NAMES.index(class_name)
+
+    # 转成 float，方便格式化输出和单元测试比较
+    return float(probs[class_index])
+
+
+def is_bad_prediction(pred_class):
+    """
+    判断预测类别是否为缺陷品。
+
+    参数:
+        pred_class (int): run_inference() 返回的预测类别索引。
+
+    返回:
+        bool: True 表示模型预测为 bad，False 表示不是 bad。
+    """
+    # ImageFolder 当前映射为 bad=0、good=1，所以必须和 BAD_CLASS_INDEX 比较
+    return pred_class == BAD_CLASS_INDEX
+
+
+def result_name(pred_class):
+    """
+    把预测类别索引转换成界面和日志中使用的大写结果名。
+
+    参数:
+        pred_class (int): run_inference() 返回的预测类别索引。
+
+    返回:
+        str: "BAD" 或 "GOOD"。
+    """
+    # 统一通过 CLASS_NAMES 取名字，防止某处又把 0/1 含义写反
+    return CLASS_NAMES[pred_class].upper()
 
 
 def preprocess_image(image_bgr):
@@ -113,7 +165,7 @@ def run_inference(session, input_tensor):
         input_tensor (np.ndarray): 预处理后的输入，形状 (1, 3, 224, 224)
 
     返回:
-        probs (np.ndarray): Softmax 后的概率，形状 (2,)，[good_prob, bad_prob]
+        probs (np.ndarray): Softmax 后的概率，形状 (2,)，[bad_prob, good_prob]
         pred_class (int): 预测类别索引，0=bad, 1=good
         pred_conf (float): 预测类别的置信度
     """
@@ -145,7 +197,7 @@ def draw_result(image, probs, pred_class, pred_conf, inference_time_ms):
 
     参数:
         image (np.ndarray): 要绘制的 BGR 图片，会被原地修改
-        probs (np.ndarray): 两个类别的概率 [good_prob, bad_prob]
+        probs (np.ndarray): 两个类别的概率 [bad_prob, good_prob]
         pred_class (int): 预测类别索引
         pred_conf (float): 置信度
         inference_time_ms (float): 推理耗时（毫秒）
@@ -156,11 +208,12 @@ def draw_result(image, probs, pred_class, pred_conf, inference_time_ms):
     h, w = image.shape[:2]
 
     # 判定结果文字
-    result_text = f"{CLASS_NAMES[pred_class].upper()}: {pred_conf*100:.1f}%"
-    bad_prob = probs[1]
+    result_text = f"{result_name(pred_class)}: {pred_conf*100:.1f}%"
+    bad_prob = get_class_probability(probs, "bad")
+    good_prob = get_class_probability(probs, "good")
 
     # 颜色：bad 用红色，good 用绿色
-    color = CLASS_COLORS["bad"] if pred_class == 1 else CLASS_COLORS["good"]
+    color = CLASS_COLORS["bad"] if is_bad_prediction(pred_class) else CLASS_COLORS["good"]
 
     # 背景条：顶部画一条色带直观显示结果
     bar_height = int(h * 0.08)
@@ -175,8 +228,8 @@ def draw_result(image, probs, pred_class, pred_conf, inference_time_ms):
 
     # 左下角写详细概率和耗时
     info_lines = [
-        f"Good: {probs[0]*100:.1f}%",
-        f"Bad:  {probs[1]*100:.1f}%",
+        f"Good: {good_prob*100:.1f}%",
+        f"Bad:  {bad_prob*100:.1f}%",
         f"Time: {inference_time_ms:.1f}ms",
     ]
 
@@ -186,7 +239,7 @@ def draw_result(image, probs, pred_class, pred_conf, inference_time_ms):
         cv2.putText(image, line, (10, y), font, font_scale * 0.7, (255, 255, 255), thickness, cv2.LINE_AA)
 
     # 如果判定为 bad，加红色边框告警
-    if pred_class == 1:
+    if is_bad_prediction(pred_class):
         border = int(max(3, w * 0.015))
         cv2.rectangle(image, (0, 0), (w - 1, h - 1), CLASS_COLORS["bad"], border)
 
@@ -224,9 +277,11 @@ def infer_single_image(session, image_path, save_dir=None):
     # 判定阈值逻辑
     # 即使 softmax 输出 bad 概率接近 0.5，也按 argmax 结果走
     # 用户可以通过 BAD_THRESHOLD 调整敏感度
-    result_str = "BAD" if pred_class == 1 else "GOOD"
+    result_str = result_name(pred_class)
+    bad_prob = get_class_probability(probs, "bad")
+    good_prob = get_class_probability(probs, "good")
     print(f"[结果] {os.path.basename(image_path)} -> {result_str} "
-          f"(good={probs[0]*100:.2f}%, bad={probs[1]*100:.2f}%, time={infer_ms:.1f}ms)")
+          f"(good={good_prob*100:.2f}%, bad={bad_prob*100:.2f}%, time={infer_ms:.1f}ms)")
 
     # 绘制结果画面（基于 resized 224x224 图）
     display = draw_result(resized.copy(), probs, pred_class, pred_conf, infer_ms)
@@ -298,15 +353,17 @@ def infer_camera(session, camera_id=0, save_dir=None):
         total_infer_ms += infer_ms
 
         # 在原图上绘制结果（用一个小窗口叠加）
-        result_str = "BAD" if pred_class == 1 else "GOOD"
-        color = CLASS_COLORS["bad"] if pred_class == 1 else CLASS_COLORS["good"]
+        result_str = result_name(pred_class)
+        color = CLASS_COLORS["bad"] if is_bad_prediction(pred_class) else CLASS_COLORS["good"]
+        bad_prob = get_class_probability(probs, "bad")
+        good_prob = get_class_probability(probs, "good")
 
         # 左上角信息面板
-        info_text = f"{result_str} G:{probs[0]*100:.0f}% B:{probs[1]*100:.0f}% {infer_ms:.1f}ms"
+        info_text = f"{result_str} G:{good_prob*100:.0f}% B:{bad_prob*100:.0f}% {infer_ms:.1f}ms"
         cv2.putText(frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
 
         # 如果 bad，画红色边框
-        if pred_class == 1:
+        if is_bad_prediction(pred_class):
             cv2.rectangle(frame, (0, 0), (frame.shape[1]-1, frame.shape[0]-1), color, 3)
 
         # 显示 FPS（过去 30 帧平均）
@@ -383,7 +440,7 @@ def infer_batch(session, input_dir, save_dir=None):
         class_name = CLASS_NAMES[pred_class]
         results[class_name] += 1
 
-        bad_prob = probs[1]
+        bad_prob = get_class_probability(probs, "bad")
         print(f"  {os.path.basename(img_path):30s} -> {class_name.upper():4s} "
               f"(bad_prob={bad_prob*100:6.2f}%, time={infer_ms:5.1f}ms)")
 
