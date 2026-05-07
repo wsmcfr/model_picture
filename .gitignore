@@ -42,6 +42,7 @@ logs_mobilenetv3*/
 # Claude Code 和工作流工具配置
 .claude/
 .spec-workflow/
+.recallloom/
 
 # 系统和编辑器文件
 .DS_Store
