@@ -42,13 +42,15 @@ IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # 输入尺寸，与训练时 Resize((224, 224)) 一致
 INPUT_SIZE = (224, 224)
 
-# 类别名称，索引 0=good, 1=bad，与 train_classify.py 的 class_to_idx 对应
-CLASS_NAMES = ["good", "bad"]
+# 类别名称，必须与 ImageFolder 的 class_to_idx 一致
+# ImageFolder 按文件夹名字母排序：bad(b) -> 0, good(g) -> 1
+# 所以索引 0=bad, 1=good
+CLASS_NAMES = ["bad", "good"]
 
 # 类别颜色（BGR 格式，用于 OpenCV 显示）
 CLASS_COLORS = {
-    "good": (0, 255, 0),    # 绿色
     "bad":  (0, 0, 255),    # 红色
+    "good": (0, 255, 0),    # 绿色
 }
 
 # 置信度阈值：bad 概率超过此值判定为缺陷品
@@ -112,7 +114,7 @@ def run_inference(session, input_tensor):
 
     返回:
         probs (np.ndarray): Softmax 后的概率，形状 (2,)，[good_prob, bad_prob]
-        pred_class (int): 预测类别索引，0=good, 1=bad
+        pred_class (int): 预测类别索引，0=bad, 1=good
         pred_conf (float): 预测类别的置信度
     """
     # 获取输入输出名称
