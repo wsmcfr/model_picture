@@ -341,14 +341,26 @@ def get_training_augmentation():
             p=0.3
         ),
 
-        # ---- 尺寸归一化（必须放最后）----
+        # ---- 尺寸归一化（保持比例 + 居中填充，避免变形） ----
 
-        # 缩放到固定224x224
-        # 224x224是MobileNetV3-Small的标准输入尺寸
-        # 必须与部署时NCNN推理的输入尺寸一致
-        # 如果改了这个尺寸，部署时也要对应修改
-        # p=1.0（隐含，Resize总是执行）
-        A.Resize(224, 224),
+        # 保持长宽比，将长边缩放到 224，短边按比例缩放
+        # 例如 640x480 的图 → 缩放为 224x168（长边=224，短边按 4:3 比例）
+        # 这样零件不会被压扁或拉伸
+        A.LongestMaxSize(max_size=224),
+
+        # 用黑色（背景）填充到 224x224 的正方形
+        # 例如 224x168 的图 → 上下各填充 28px 黑色，变成 224x224
+        # border_mode=0 表示 BORDER_CONSTANT（纯色填充），不镜像边缘
+        # value=0 图片填充黑色（背景色）
+        # mask_value=0 掩码填充背景类（0）
+        # 零件居中放置，填充区域在边缘，不会遮挡缺陷
+        A.PadIfNeeded(
+            min_height=224,
+            min_width=224,
+            border_mode=0,
+            value=0,
+            mask_value=0,
+        ),
     ]
     return A.Compose(train_transform)
 
@@ -357,16 +369,22 @@ def get_validation_augmentation():
     """
     验证集/测试集数据增强
 
-    验证集不做任何随机增强，只做Resize到224x224。
+    验证集不做任何随机增强，只做保持比例的缩放 + 填充到 224x224。
     原因：验证集要反映模型在真实数据上的表现，不能"作弊"。
-    如果验证集也做随机增强，每次验证结果都不同，无法比较。
 
-    只做Resize是因为：
-      1. 模型输入要求固定224x224，必须缩放
-      2. 其他变换都是随机的，验证时不应该引入随机性
+    使用 LongestMaxSize + PadIfNeeded，与训练集保持一致:
+      1. 保持长宽比缩放，避免零件变形
+      2. 黑边填充到 224x224，完整保留零件全貌
     """
     return A.Compose([
-        A.Resize(224, 224),
+        A.LongestMaxSize(max_size=224),
+        A.PadIfNeeded(
+            min_height=224,
+            min_width=224,
+            border_mode=0,
+            value=0,
+            mask_value=0,
+        ),
     ])
 
 

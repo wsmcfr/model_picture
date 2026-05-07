@@ -39,6 +39,10 @@ logs_mobilenetv3*/
 # 保留一个可直接运行电脑端推理测试的ONNX模型
 !checkpoints/defect_unet.onnx
 
+# Claude Code 和工作流工具配置
+.claude/
+.spec-workflow/
+
 # 系统和编辑器文件
 .DS_Store
 Thumbs.db

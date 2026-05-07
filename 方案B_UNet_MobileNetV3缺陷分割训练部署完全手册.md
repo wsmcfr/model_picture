@@ -119,9 +119,11 @@ cd /d D:\model_picture
 | 正式训练 | `python train.py --data_dir D:\model_picture\datasets_severstal --num_classes 5 --epochs 100 --batch_size 4 --num_workers 0 --log_interval 50` |
 | 中断后续训 | `python train.py --data_dir D:\model_picture\datasets_severstal --num_classes 5 --epochs 100 --batch_size 4 --num_workers 0 --resume auto --log_interval 50` |
 | 启动TensorBoard | `tensorboard --logdir D:\model_picture\logs` |
-| 导出ONNX | `python export_onnx.py --checkpoint D:\model_picture\checkpoints\best_model.pth --output D:\model_picture\checkpoints\defect_unet.onnx --num_classes 5 --encoder mobilenet_v2` |
+| 导出分割ONNX | `python export_onnx.py --checkpoint D:\model_picture\checkpoints\best_model.pth --output D:\model_picture\checkpoints\defect_unet.onnx --num_classes 5 --encoder mobilenet_v2` |
 | 检查ONNX文件 | `Get-Item D:\model_picture\checkpoints\defect_unet.onnx` |
 | 电脑端UVC实时推理 | `python infer_camera_onnx.py --camera_id 1 --model D:\model_picture\checkpoints\defect_unet.onnx --num_classes 5` |
+| **分类模型训练（新增）** | `python train_classify.py --data_dir ./datasets_classify --epochs 100 --batch_size 16` |
+| **分类模型导出ONNX（新增）** | `python export_classify_onnx.py --checkpoint ./checkpoints_classify/best_model.pth` |
 
 最短使用流程：
 
@@ -166,30 +168,45 @@ python -c "import segmentation_models_pytorch as smp; print(f'SMP {smp.__version
 ```
 D:\model_picture\
 ├── defect-unet\              ← Conda虚拟环境（Python 3.9 + PyTorch）
-├── datasets\                 ← 训练数据（转换后）
-│   ├── train\
-│   │   ├── images\           ← 训练原图（70%）
-│   │   └── masks\            ← 训练掩码 PNG（70%）
-│   ├── val\
-│   │   ├── images\           ← 验证原图（15%）
-│   │   └── masks\            ← 验证掩码 PNG（15%）
-│   └── test\
-│       ├── images\           ← 测试原图（15%）
-│       └── masks\            ← 测试掩码 PNG（15%）
-├── raw_images\               ← Labelme原始标注JSON + 原图
-├── converted_images\         ← 转换后的原图（convert_labelme.py生成）
-├── converted_masks\          ← 转换后的掩码（convert_labelme.py生成）
-├── checkpoints\              ← 模型权重保存
-│   ├── best_model.pth        ← 最佳模型
-│   └── defect_unet.onnx      ← 导出的ONNX模型
-├── logs\                     ← TensorBoard日志
-├── dataset.py                ← 数据集加载代码（含数据增强定义）
-├── train.py                  ← 训练脚本（含参数说明）
-├── export_onnx.py            ← ONNX导出脚本
-├── infer_camera_onnx.py      ← 电脑端UVC摄像头ONNX实时推理脚本
-├── convert_labelme.py        ← Labelme标注转换 + 数据集划分脚本
-├── capture.py                ← UVC摄像头截图脚本
-└── 操作手册.md               ← 操作手册
+├── datasets\                 ← 分割训练数据（转换后）
+│   ├── train\               ← 训练集（70%）
+│   │   ├── images\           ← 训练原图
+│   │   └── masks\            ← 训练掩码 PNG
+│   ├── val\                  ← 验证集（15%）
+│   │   ├── images\           ← 验证原图
+│   │   └── masks\            ← 验证掩码 PNG
+│   └── test\                 ← 测试集（15%）
+│       ├── images\           ← 测试原图
+│       └── masks\            ← 测试掩码 PNG
+├── datasets_classify\       ← 【新增】分类训练数据（good/bad 二分类）
+│   ├── train\good\            ← 良品训练图
+│   ├── train\bad\             ← 缺陷训练图
+│   ├── val\good\             ← 良品验证图
+│   └── val\bad\              ← 缺陷验证图
+├── raw_images\               ← Labelme原始标注JSON + 原图（分割用）
+├── converted_images\         ← 转换后的原图
+├── converted_masks\          ← 转换后的掩码 PNG
+├── checkpoints\              ← MobileNetV2 UNet 分割模型
+│   ├── best_model.pth        ← 最佳模型权重
+│   └── defect_unet.onnx      ← 导出的ONNX
+├── checkpoints_mobilenetv3\ ← MobileNetV3 UNet 对比实验
+│   ├── best_model.pth
+│   └── defect_unet_mobilenetv3.onnx
+├── checkpoints_classify\     ← 【新增】分类模型
+│   ├── best_model.pth
+│   └── defect_classifier.onnx
+├── logs\                     ← TensorBoard日志（分割）
+├── logs_classify\            ← 【新增】TensorBoard日志（分类）
+├── dataset.py                ← 分割数据集加载+数据增强
+├── train.py                  ← UNet分割训练脚本
+├── export_onnx.py            ← 分割模型ONNX导出
+├── infer_camera_onnx.py      ← 电脑端UVC实时推理
+├── convert_labelme.py        ← Labelme标注转换+数据集划分
+├── capture.py                ← UVC摄像头截图采集
+├── train_classify.py         ← 【新增】MobileNetV3分类训练
+├── export_classify_onnx.py   ← 【新增】分类模型ONNX导出
+├── 操作手册.md               ← 操作速查手册
+└── 项目全景说明.md            ← 【新增】项目总览文档
 ```
 
 ### 3.1 核心训练代码说明
@@ -198,12 +215,14 @@ D:\model_picture\
 
 | 文件 | 功能 | 关键说明 |
 |---|---|---|
-| `dataset.py` | 数据集加载+数据增强 | DefectDataset类、训练/验证增强、ImageNet归一化 |
-| `train.py` | 主训练脚本 | UNet+轻量Encoder、CE+Dice联合损失、AdamW、余弦退火、batch级进度日志 |
-| `export_onnx.py` | 导出ONNX | .pth→.onnx，验证模型结构 |
+| `dataset.py` | 分割数据集加载+数据增强 | DefectDataset类、训练/验证增强、ImageNet归一化。预处理方式：保持比例缩放+填充到224x224，避免零件变形 |
+| `train.py` | UNet分割训练脚本 | UNet+轻量Encoder、CE+Dice联合损失、AdamW、余弦退火、batch级进度日志、断点续训 |
+| `export_onnx.py` | 分割模型ONNX导出 | .pth→.onnx，验证模型结构 |
 | `infer_camera_onnx.py` | 电脑端实时推理 | ONNX Runtime + OpenCV，UVC摄像头实时显示分割结果 |
 | `convert_labelme.py` | 标注转换+划分 | JSON→掩码PNG、train/val/test划分 |
 | `capture.py` | 摄像头截图 | UVC摄像头640x480采集、亮度调节 |
+| `train_classify.py` | **【新增】MobileNetV3分类训练** | 二分类(good/bad)、ImageNet预训练、自动类别加权、AdamW+余弦退火 |
+| `export_classify_onnx.py` | **【新增】分类模型ONNX导出** | 导出~5MB FP32 ONNX，INT8量化后~1-2MB，适合MP157主链路 |
 
 ---
 
